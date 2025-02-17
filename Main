@@ -1,0 +1,192 @@
+import warnings
+import pandas as pd
+import numpy as np
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.neural_network import MLPRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, accuracy_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import classification_report
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import GridSearchCV
+import matplotlib.pyplot as plt
+
+def upload_csv():
+    from google.colab import files
+    uploaded = files.upload()
+    return list(uploaded.keys())[0]  # Return the filename instead of hardcoding the path
+
+def data_collection(file_path):
+    """Load and return the Excel data."""
+    data = pd.read_excel(file_path, engine='openpyxl')
+    return data
+def data_cleaning(data):
+    """Preprocess the data and split into train and test sets."""
+    data = data[data['InvoiceDate'].notnull()]
+    data['Quantity'] = pd.to_numeric(data['Quantity'], errors='coerce')
+    data['Description'] = data['Description'].astype(str)  # Convert 'Description' to strings
+    data.set_index('InvoiceDate', inplace=True)  # Set 'InvoiceDate' as the index
+
+    # Fill missing 'Description' values with similar 'StockCode' values
+    data['Description'] = data.apply(lambda row: find_similar_stock_code(row) if pd.isnull(row['Description']) else row['Description'], axis=1)
+
+    # Split the data into train and test sets
+    train_data = data.iloc[:-12]
+    test_data = data.iloc[-12:]
+
+    return train_data, test_data
+
+def find_similar_stock_code(row):
+    """Find a similar 'StockCode' with a valid 'Description'."""
+    if pd.notnull(row['StockCode']):
+        similar_description = data[(data['StockCode'] == row['StockCode']) & (pd.notnull(data['Description']))]['Description'].values
+        if len(similar_description) > 0:
+            return similar_description[0]
+    return row['Description']
+
+def feature_engineering(data):
+    # Calculate total sales for each product
+    data['TotalSales'] = data['Quantity'] * data['Price']
+    return data
+
+def plot_line_graphs(data, top_n=5, time_frequency='W'):
+    """Plot line graphs for top N descriptions with high sales."""
+    grouped_data = data.groupby(['Description', pd.Grouper(freq=time_frequency)])['Quantity'].sum()
+    top_descriptions = grouped_data.groupby('Description').sum().nlargest(top_n).index
+
+    for description in top_descriptions:
+        description_data = grouped_data.loc[description]
+        plt.plot(description_data.index, description_data.values)
+        plt.xlabel('Date')
+        plt.ylabel('Quantity')
+        plt.title(f'Sales Forecast for {description} ({time_frequency})')
+        plt.show()
+
+
+def perform_exponential_smoothing(demand, smoothing_level=0.2, smoothing_slope=0.2):
+    """Perform Exponential Smoothing and return the forecast."""
+    freq = pd.infer_freq(demand.index)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="the 'smoothing_slope'' keyword is deprecated")
+        exp_smooth_model = ExponentialSmoothing(demand,
+                                                trend='add',
+                                                seasonal='add',
+                                                seasonal_periods=12,
+                                                freq=freq).fit(smoothing_level=smoothing_level,
+                                                               smoothing_trend=smoothing_slope)
+    exp_smooth_forecast = exp_smooth_model.forecast(12)
+    return exp_smooth_forecast
+
+def perform_arima(demand, order=(2, 1, 0)):
+    """Perform ARIMA and return the forecast."""
+    arima_model = ARIMA(demand, order=order).fit()
+    arima_forecast = arima_model.forecast(steps=12)
+    return arima_forecast
+
+
+def perform_neural_networks(data):
+    """Perform Neural Networks and return the forecast."""
+    # Copy the data to avoid modifying the original DataFrame
+    data_copy = data.copy()
+    data_copy.dropna(subset=['Quantity'], inplace=True)
+    demand_copy = data_copy['Quantity'].copy()
+    nn_model = MLPRegressor(hidden_layer_sizes=(100, 100), max_iter=500).fit(np.arange(len(data_copy['Quantity'])).reshape(-1, 1), demand_copy)
+    nn_forecast = nn_model.predict(np.arange(len(demand_copy), len(demand_copy) + 12).reshape(-1, 1))
+    return nn_forecast
+
+
+def perform_regression(data):
+    """Perform Regression and return the forecast."""
+    data.dropna(subset=['Quantity'], inplace=True)
+    demand_copy = data['Quantity'].copy()
+    regression_model = LinearRegression().fit(np.arange(len(data)).reshape(-1, 1), demand_copy)
+    regression_forecast = regression_model.predict(np.arange(len(demand_copy), len(demand_copy) + 12).reshape(-1, 1))
+    return regression_forecast
+
+
+def evaluate_forecasts(demand_copy, forecasts):
+    """Evaluate the models using Root Mean Squared Error and return RMSE."""
+    rmse = np.sqrt(mean_squared_error(demand_copy[-len(forecasts):], forecasts))
+    return rmse
+
+
+def plot_forecasts(data, forecasts, labels):
+    """Plot historical data and forecasts."""
+    plt.figure(figsize=(10, 6))
+    plt.plot(data.index, data['Quantity'], label='Historical Data', color='blue')
+    forecast_dates = pd.date_range(start=data.index[-1], periods=12, freq='W')
+    for i, forecast in enumerate(forecasts):
+        plt.plot(forecast_dates, forecast, label=labels[i])
+
+    plt.xlabel('Date')
+    plt.ylabel('Quantity')
+    plt.title('Historical Data and Forecasts')
+    plt.legend()
+    plt.show()
+
+
+def classify_description_neighbors(data):
+    """Perform neighbor classification to predict the product category."""
+    encoder = OneHotEncoder(sparse=False)
+    description_encoded = encoder.fit_transform(data[['Description']])
+    X = np.hstack([description_encoded, data[['Quantity']].values])
+    y = data['Description'].values
+
+    param_grid = {'n_neighbors': [3, 5, 7, 9]}
+    classifier = KNeighborsClassifier()
+    grid_search = GridSearchCV(classifier, param_grid, cv=5)
+    grid_search.fit(X, y)
+
+    classifier = grid_search.best_estimator_
+    y_pred = classifier.predict(X)
+    accuracy = accuracy_score(y, y_pred)
+    classification_rep = classification_report(y, y_pred)
+    return accuracy, classification_rep
+
+def main():
+    # Data collection - Upload the CSV file to Colab and get the file path
+    file_path = upload_csv()
+    data = data_collection(file_path)
+
+    # Data cleaning and splitting
+    train_data, test_data = data_cleaning(data)
+
+    # Evaluate Exponential Smoothing
+    exp_smooth_forecast = perform_exponential_smoothing(train_data['Quantity'])
+    exp_smooth_mse = evaluate_forecasts(test_data['Quantity'], exp_smooth_forecast)
+    print("Exponential Smoothing MSE:", exp_smooth_mse)
+
+    # Evaluate ARIMA
+    arima_forecast = perform_arima(train_data['Quantity'])
+    arima_mse = evaluate_forecasts(test_data['Quantity'], arima_forecast)
+    print("ARIMA MSE:", arima_mse)
+
+    # Evaluate Neural Networks
+    nn_forecast = perform_neural_networks(train_data)
+    nn_mse = evaluate_forecasts(test_data['Quantity'], nn_forecast)
+    print("Neural Networks MSE:", nn_mse)
+
+    # Evaluate Regression
+    regression_forecast = perform_regression(train_data)
+    regression_mse = evaluate_forecasts(test_data['Quantity'], regression_forecast)
+    print("Regression MSE:", regression_mse)
+
+    # Print Evaluation Results
+    print("Exponential Smoothing MSE:", exp_smooth_mse)
+    print("ARIMA MSE:", arima_mse)
+    print("Neural Networks MSE:", nn_mse)
+    print("Regression MSE:", regression_mse)
+
+    # Classification Report
+    accuracy, classification_rep = classify_description_neighbors(train_data)
+    print("Neighbor Classification Accuracy:", accuracy)
+    print("Classification Report:")
+    print(classification_rep)
+
+    # Plot the historical data and forecasts
+    plot_forecasts(train_data, [arima_forecast, exp_smooth_forecast, nn_forecast, regression_forecast],
+                   ['ARIMA Forecast', 'Exponential Smoothing Forecast', 'Neural Networks Forecast', 'Regression Forecast'])
+
+if __name__ == "__main__":
+    main()
