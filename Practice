@@ -1,0 +1,112 @@
+import pandas as pd
+import numpy as np
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.neural_network import MLPRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+import matplotlib.pyplot as plt
+
+def data_preprocessing(data):
+    """Preprocess the data."""
+    # Convert 'InvoiceDate' column to datetime format
+    data['InvoiceDate'] = pd.to_datetime(data['InvoiceDate'], format='%Y-%m-%d %H:%M:%S')
+    return data
+
+def feature_engineering(data):
+    """Extract relevant columns."""
+    demand = data[['Description', 'Quantity', 'Country']]
+    return demand
+
+def perform_exponential_smoothing(demand, smoothing_level=0.2):
+    """Perform Exponential Smoothing and return the forecast."""
+    exp_smooth_model = ExponentialSmoothing(demand['Quantity']).fit(smoothing_level=smoothing_level, optimized=False)
+    exp_smooth_forecast = exp_smooth_model.forecast(12)
+    exp_smooth_forecast[exp_smooth_forecast < 0] = 0  # Prevent negative forecasts
+    return exp_smooth_forecast
+
+def perform_arima(demand, order=(2, 1, 0)):
+    """Perform ARIMA and return the forecast."""
+    arima_model = ARIMA(demand['Quantity'], order=order).fit()
+    arima_forecast = arima_model.predict(start=len(demand), end=len(demand) + 11, typ='levels')
+    arima_forecast[arima_forecast < 0] = 0  # Prevent negative forecasts
+    return arima_forecast
+
+def perform_neural_networks(data):
+    """Perform Neural Networks and return the forecasts."""
+    nn_model = MLPRegressor(hidden_layer_sizes=(100, 100)).fit(data[['Quantity']], data['Quantity'])
+    nn_forecast = nn_model.predict(data[['Quantity']].iloc[-12:].values)  # Forecast for 12 months
+    nn_forecast[nn_forecast < 0] = 0  # Prevent negative forecasts
+    return nn_forecast
+
+def perform_regression(data):
+    """Perform Regression and return the forecasts."""
+    regression_model = LinearRegression().fit(np.arange(len(data)).reshape(-1, 1), data['Quantity'])
+    regression_forecast = regression_model.predict(np.arange(len(data), len(data) + 12).reshape(-1, 1))  # Forecast for 12 months
+    regression_forecast[regression_forecast < 0] = 0  # Prevent negative forecasts
+    return regression_forecast
+
+def evaluate_forecasts(demand_copy, forecasts):
+    """Evaluate the models using Mean Squared Error and return MSE."""
+    mse = mean_squared_error(demand_copy[-len(forecasts):], forecasts)
+    return mse
+
+def plot_forecasts(product_name, demand, forecasts, forecast_labels):
+    """Plot the historical data and forecasts using a dotted line graph."""
+    plt.figure(figsize=(10, 6))
+    plt.plot(demand.index, demand['Quantity'], label='Historical Data')
+    for forecast, label in zip(forecasts, forecast_labels):
+        plt.plot(pd.date_range(start=demand.index[-1], periods=12, freq='M'), forecast, '--', label=label)
+    plt.legend()
+    plt.xlabel('Date')
+    plt.ylabel('Quantity')
+    plt.title(f'Sales Forecast for {product_name}')
+    plt.show()
+
+def main():
+    # Data collection
+    data = pd.read_excel("/content/drive/MyDrive/Copy of online_retail_II.xlsx")
+
+    # Data preprocessing
+    data = data_preprocessing(data)
+
+    # Feature engineering
+    demand = feature_engineering(data)
+
+    # Data splitting
+    top_products = data.groupby('Description')['Quantity'].sum().nlargest(5).index
+
+    for product_name in top_products:
+        product_data = data[data['Description'] == product_name]
+        product_demand = feature_engineering(product_data)
+
+        # Model selection and forecasting
+        exp_smooth_forecast = perform_exponential_smoothing(product_demand)
+        arima_forecast = perform_arima(product_demand)
+        nn_forecast = perform_neural_networks(product_demand)
+        regression_forecast = perform_regression(product_demand)
+
+        # Evaluate the models using Mean Squared Error
+        exp_smooth_mse = evaluate_forecasts(product_demand['Quantity'], exp_smooth_forecast)
+        arima_mse = evaluate_forecasts(product_demand['Quantity'], arima_forecast)
+        nn_mse = evaluate_forecasts(product_demand['Quantity'], nn_forecast)
+        regression_mse = evaluate_forecasts(product_demand['Quantity'], regression_forecast)
+
+        # Plot the historical data and forecasts using a dotted line graph
+        forecast_labels = ['Exponential Smoothing Forecast', 'ARIMA Forecast', 'Neural Networks Forecast', 'Regression Forecast']
+        plot_forecasts(product_name, product_demand, [exp_smooth_forecast, arima_forecast, nn_forecast, regression_forecast], forecast_labels)
+
+        # Print the forecasts and MSE for each product
+        print("Product:", product_name)
+        print("Exponential Smoothing Forecast:", exp_smooth_forecast)
+        print("ARIMA Forecast:", arima_forecast)
+        print("Neural Networks Forecast:", nn_forecast)
+        print("Regression Forecast:", regression_forecast)
+        print()
+        print("Exponential Smoothing MSE:", exp_smooth_mse)
+        print("ARIMA MSE:", arima_mse)
+        print("Neural Networks MSE:", nn_mse)
+        print("Regression MSE:", regression_mse)
+
+if __name__ == "__main__":
+    main()
